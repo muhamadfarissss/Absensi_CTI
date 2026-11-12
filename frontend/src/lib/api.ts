@@ -1,0 +1,557 @@
+import { AttendanceRecord, Notification, OfficeLocation, RequestRecord, User, HospitalLocation, MasterDepartment, MasterPosition, JobOpening, Candidate } from "../types";
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || "/api";
+
+// Derive uploads base URL: strip "/api" suffix from API_BASE_URL if VITE_UPLOADS_BASE_URL not set
+const UPLOADS_BASE_URL = import.meta.env.VITE_UPLOADS_BASE_URL 
+  || API_BASE_URL.replace(/\/api\/?$/, "");
+
+const TOKEN_KEY = "employee-pwa-token";
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string) {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+/**
+ * Constructs the full URL for an uploaded file by prepending the uploads base URL
+ * to a relative path returned by the API. Returns null for falsy input.
+ * If the path is already absolute (starts with "http"), returns it as-is.
+ */
+export function getUploadUrl(relativePath: string | null | undefined): string | null {
+  if (!relativePath) return null;
+  if (relativePath.startsWith("http")) return relativePath; // already absolute
+  return `${UPLOADS_BASE_URL}${relativePath}`;
+}
+
+/**
+ * Error kustom agar UI bisa membedakan pesan dari server (mis. akurasi GPS
+ * rendah, di luar radius kantor) dari error jaringan biasa.
+ */
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = getToken();
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
+  });
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    throw new ApiError(data.message || "Terjadi kesalahan pada server.", res.status, data.code);
+  }
+
+  return data as T;
+}
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+export async function apiRegister(payload: {
+  name: string;
+  employeeId?: string;
+  nik?: string;
+  email?: string;
+  phone?: string;
+  password: string;
+  department?: string;
+  id_department?: string;
+  id_position?: string;
+  position?: string;
+}): Promise<{ token: string; user: User }> {
+  return request("/auth/register", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function apiLogin(payload: {
+  email?: string;
+  employeeId?: string;
+  password: string;
+}): Promise<{ token: string; user: User }> {
+  return request("/auth/login", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function apiGetMe(): Promise<{ user: User }> {
+  return request("/auth/me");
+}
+
+export async function apiGetDepartments(): Promise<{ departments: MasterDepartment[] }> {
+  return request("/auth/departments");
+}
+
+export async function apiGetPositions(): Promise<{ positions: MasterPosition[] }> {
+  return request("/auth/positions");
+}
+
+// ---------------------------------------------------------------------------
+// Attendance
+// ---------------------------------------------------------------------------
+export async function apiGetTodayAttendance(): Promise<{ record: AttendanceRecord | null }> {
+  return request("/attendance/today");
+}
+
+export async function apiGetAttendanceHistory(): Promise<{ records: AttendanceRecord[] }> {
+  return request("/attendance/history");
+}
+
+export type GeoPayload = { 
+  lat: number; 
+  lng: number; 
+  accuracy: number; 
+  photoUrl?: string | null; 
+  history?: { lat: number; lng: number }[];
+  hospitalId?: string | null;
+  customLocationName?: string | null;
+};
+
+export async function apiCheckIn(payload: GeoPayload): Promise<{ record: AttendanceRecord }> {
+  return request("/attendance/checkin", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function apiCheckOut(payload: GeoPayload): Promise<{ record: AttendanceRecord }> {
+  return request("/attendance/checkout", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function apiGetAttendanceLocations(type?: 'rumah_sakit' | 'kantor'): Promise<{ locations: HospitalLocation[] }> {
+  const query = type ? `?type=${type}` : '';
+  return request(`/attendance/locations${query}`);
+}
+
+// ---------------------------------------------------------------------------
+// Requests (Cuti/Izin/Sakit/Lembur)
+// ---------------------------------------------------------------------------
+export async function apiGetRequests(): Promise<{ requests: RequestRecord[] }> {
+  return request("/requests");
+}
+
+export async function apiSubmitRequest(payload: {
+  type: string;
+  reason: string;
+  date: string;
+  endDate?: string;
+}): Promise<{ request: RequestRecord }> {
+  return request("/requests", { method: "POST", body: JSON.stringify(payload) });
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+export async function apiGetNotifications(): Promise<{ notifications: Notification[] }> {
+  return request("/notifications");
+}
+
+export async function apiMarkNotificationRead(id: string): Promise<{ success: boolean }> {
+  return request(`/notifications/${id}/read`, { method: "PATCH" });
+}
+
+// ---------------------------------------------------------------------------
+// Profile
+// ---------------------------------------------------------------------------
+export async function apiUpdateProfile(payload: Partial<User>): Promise<{ user: User }> {
+  return request("/profile", { method: "PUT", body: JSON.stringify(payload) });
+}
+
+// ---------------------------------------------------------------------------
+// Office (untuk geofencing & tampilan radius di peta)
+// ---------------------------------------------------------------------------
+export async function apiGetOffice(): Promise<{ office: OfficeLocation | null }> {
+  return request("/office");
+}
+
+export async function apiHrdGetOffices(): Promise<{ offices: OfficeLocation[] }> {
+  return request("/hrd/offices");
+}
+
+// ---------------------------------------------------------------------------
+// Hospital Management (HRD)
+// ---------------------------------------------------------------------------
+export async function apiHrdGetHospitals(): Promise<{ hospitals: HospitalLocation[] }> {
+  return request("/hrd/hospitals");
+}
+
+export async function apiHrdCreateHospital(payload: {
+  name?: string;
+  nama_rs?: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  radius_meters?: number;
+}): Promise<{ message: string; hospital?: HospitalLocation }> {
+  return request("/hrd/hospitals", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function apiHrdUpdateHospital(id: string, payload: {
+  name?: string;
+  nama_rs?: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  radius_meters?: number;
+}): Promise<{ message: string; hospital?: HospitalLocation }> {
+  return request(`/hrd/hospitals/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+}
+
+export async function apiHrdDeleteHospital(id: string): Promise<{ message: string }> {
+  return request(`/hrd/hospitals/${id}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Mengambil seluruh daftar karyawan
+// ---------------------------------------------------------------------------
+export async function apiHrdGetEmployees(): Promise<{employees: User[]}> {
+  return request("/hrd/employees");
+}
+
+export async function apiHrdCreateEmployee(payload: any): Promise<{message: string; employee?: User}> {
+  return request("/hrd/employees", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function apiHrdUpdateEmployee(id: string, payload: any): Promise<{message: string}> {
+  return request(`/hrd/employees/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+}
+
+export async function apiHrdDeleteEmployee(id: string): Promise<{message: string}> {
+  return request(`/hrd/employees/${id}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Mengambil seluruh rekap absensi karyawan
+// ---------------------------------------------------------------------------
+export async function apiHrdGetAttendance(params?: string | { date?: string; startDate?: string; endDate?: string }): Promise<{records: AttendanceRecord[]}> {
+  if (typeof params === 'string') {
+    const query = params ? `?date=${params}` : "";
+    return request(`/hrd/attendance${query}`);
+  }
+  const searchParams = new URLSearchParams();
+  if (params?.startDate) searchParams.append("startDate", params.startDate);
+  if (params?.endDate) searchParams.append("endDate", params.endDate);
+  if (params?.date && !params.startDate) searchParams.append("date", params.date);
+  const qs = searchParams.toString();
+  return request(`/hrd/attendance${qs ? `?${qs}` : ""}`);
+}
+
+// ---------------------------------------------------------------------------
+// Mengambil seluruh pengajuan izin/cuti/sakit dari semua karyawan
+// ---------------------------------------------------------------------------
+export async function apiHrdGetRequests(params?: { startDate?: string; endDate?: string }): Promise<{requests: RequestRecord[]}> {
+  const searchParams = new URLSearchParams();
+  if (params?.startDate) searchParams.append("startDate", params.startDate);
+  if (params?.endDate) searchParams.append("endDate", params.endDate);
+  const qs = searchParams.toString();
+  return request(`/hrd/leaves${qs ? `?${qs}` : ""}`);
+}
+
+// ---------------------------------------------------------------------------
+// Memperbarui status pengajuan karyawan (APPROVED / REJECTED)
+// ---------------------------------------------------------------------------
+export async function apiHrdUpdateRequestStatus(
+  id: string, 
+  status: "APPROVED" | "REJECTED", 
+  rejection_reason?: string
+): Promise<{request: RequestRecord}> {
+  return request(`/hrd/leaves/${id}/approval`, {
+    method: "PATCH", 
+    body: JSON.stringify({ status, rejection_reason })
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Mengambil data ringkasan untuk Dashboard HRD
+// ---------------------------------------------------------------------------
+export async function apiHrdGetDashboardOverview(): Promise<{
+  metrics: {
+    totalEmployees: number;
+    presentToday: number;
+    lateToday: number;
+    pendingLeaves: number;
+  };
+  recentActivities: Array<{
+    id: string,
+    name: string,
+    role: string,
+    action: string,
+    time: string,
+    status: string,
+  }>;
+}> {
+  return request("/hrd/dashboard/overview");
+}
+
+export async function apiHrdGetKpi(month?: string): Promise<{ kpi: any[] }> {
+  const query = month ? `?month=${month}` : '';
+  return request(`/hrd/kpi${query}`);
+}
+
+export async function apiHrdUpdateKpi(payload: any): Promise<{ message: string }> {
+  return request("/hrd/kpi", { method: "POST", body: JSON.stringify(payload) });
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic KPI Templates & Evaluations
+// ---------------------------------------------------------------------------
+export async function apiHrdGetKpiTemplates(): Promise<{ templates: any[] }> {
+  return request("/hrd/kpi-templates");
+}
+
+export async function apiHrdCreateKpiTemplate(payload: {
+  nama_halaman: string;
+  target_bagian: string;
+  skema_kolom: string[];
+}): Promise<{ message: string; template: any }> {
+  return request("/hrd/kpi-templates", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function apiHrdUpdateKpiTemplate(id: string, payload: {
+  nama_halaman: string;
+  target_bagian: string;
+  skema_kolom: string[];
+}): Promise<{ message: string }> {
+  return request(`/hrd/kpi-templates/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+}
+
+export async function apiHrdDeleteKpiTemplate(id: string): Promise<{ message: string }> {
+  return request(`/hrd/kpi-templates/${id}`, { method: "DELETE" });
+}
+
+export async function apiHrdGetKpiDynamic(templateId: string, periode: string): Promise<{
+  template: any;
+  periode: string;
+  evaluations: any[];
+}> {
+  return request(`/hrd/kpi-dynamic/${templateId}?periode=${encodeURIComponent(periode)}`);
+}
+
+export async function apiHrdSaveKpiDynamic(templateId: string, payload: {
+  periode: string;
+  evaluations: Array<{ id_karyawan: string; nilai_custom: Record<string, any> }>;
+}): Promise<{ message: string; saved: number }> {
+  return request(`/hrd/kpi-dynamic/${templateId}`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+
+// ---------------------------------------------------------------------------
+// Mengambil data ringkasan absensi seluruh karyawan (Izin, Cuti, Telat)
+// ---------------------------------------------------------------------------
+export async function apiHrdGetAttendanceSummary(params?: { 
+  date?: string; 
+  startDate?: string; 
+  endDate?: string; 
+  search?: string 
+}): Promise<{
+  summary: Array<{
+    id: string;
+    employeeId: string;
+    name: string;
+    department: string;
+    email?: string;
+    phone?: string;
+    position?: string;
+    izin: number | null;
+    sakit: number | null;
+    cuti: number | null;
+    alpa: number | null;
+    telat: number | null;
+    telatMenit?: number | null;
+    hadir: number;
+    periode: string;
+    periodeSubtext?: string | null;
+    hasData: boolean;
+  }>;
+}> {
+  const searchParams = new URLSearchParams();
+  if (params?.startDate) searchParams.append("startDate", params.startDate);
+  if (params?.endDate) searchParams.append("endDate", params.endDate);
+  if (params?.date && !params.startDate) searchParams.append("date", params.date);
+  if (params?.search) searchParams.append("search", params.search);
+  const qs = searchParams.toString();
+  return request(`/hrd/attendance-summary${qs ? `?${qs}` : ""}`);
+}
+
+// ---------------------------------------------------------------------------
+// Update / Override Rekap Absensi Manual HRD
+// ---------------------------------------------------------------------------
+export async function apiHrdUpdateAttendanceSummaryOverride(payload: {
+  user_id: string;
+  period_key: string;
+  izin?: number | null;
+  sakit?: number | null;
+  cuti?: number | null;
+  alpa?: number | null;
+  telat?: number | null;
+  telat_menit?: number | null;
+  notes?: string;
+}): Promise<{ message: string }> {
+  return request('/hrd/attendance-summary/override', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Download Laporan Harian (Excel)
+// ---------------------------------------------------------------------------
+export async function apiHrdExportDailyReport(date: string, userId?: string): Promise<void> {
+  const token = getToken();
+  let url = `${API_BASE_URL}/hrd/attendance-daily-report?date=${date}`;
+  if (userId) {
+    url += `&userId=${userId}`;
+  }
+  
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    }
+  });
+
+  if (!res.ok) {
+    throw new ApiError("Gagal mendownload laporan", res.status);
+  }
+
+  const blob = await res.blob();
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = downloadUrl;
+  a.download = userId ? `laporan-kehadiran-karyawan-${date}.xlsx` : `laporan-kehadiran-harian-${date}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(downloadUrl);
+}
+
+// ---------------------------------------------------------------------------
+// Mengambil rincian detail laporan absensi 1 orang karyawan (untuk ekspor spreadsheet)
+// ---------------------------------------------------------------------------
+export async function apiHrdGetEmployeeReport(userId: string, params?: { date?: string; startDate?: string; endDate?: string }): Promise<{
+  employee: {
+    id: string;
+    name: string;
+    employeeId: string;
+    department: string;
+    position?: string;
+    email?: string;
+    phone?: string;
+  };
+  summary: {
+    totalIzin: number;
+    totalCuti: number;
+    totalTelat: number;
+    totalHadir: number;
+    totalHariAktif?: number;
+  };
+  periode: string;
+  details: Array<{
+    date: string;
+    dayName: string;
+    category: 'TERLAMBAT' | 'IZIN' | 'CUTI' | 'HADIR' | string;
+    categoryLabel: string;
+    checkInTime?: string;
+    checkOutTime?: string;
+    workingHours?: number | null;
+    keterangan?: string;
+    status?: string;
+  }>;
+  incidentDetails: any[];
+}> {
+  const searchParams = new URLSearchParams();
+  if (params?.startDate) searchParams.append("startDate", params.startDate);
+  if (params?.endDate) searchParams.append("endDate", params.endDate);
+  if (params?.date && !params.startDate) searchParams.append("date", params.date);
+  const qs = searchParams.toString();
+  return request(`/hrd/employee-report/${userId}${qs ? `?${qs}` : ""}`);
+}
+
+// ---------------------------------------------------------------------------
+// Recruitment / Rekrutmen API
+// ---------------------------------------------------------------------------
+export async function apiHrdGetRecruitmentOverview(): Promise<{ recruitment: JobOpening[] }> {
+  return request("/hrd/recruitment/overview");
+}
+
+export async function apiHrdCreateJobOpening(payload: { title: string; role: string }): Promise<{ message: string; jobId: string }> {
+  return request("/hrd/recruitment/jobs", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function apiHrdUpdateJobOpening(id: string, payload: { title: string; role: string; status: 'OPEN' | 'CLOSED' }): Promise<{ message: string }> {
+  return request(`/hrd/recruitment/jobs/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+}
+
+export async function apiHrdDeleteJobOpening(id: string): Promise<{ message: string }> {
+  return request(`/hrd/recruitment/jobs/${id}`, { method: "DELETE" });
+}
+
+export async function apiHrdGetCandidates(jobOpeningId?: string): Promise<{ candidates: Candidate[] }> {
+  const query = jobOpeningId ? `?job_opening_id=${encodeURIComponent(jobOpeningId)}` : "";
+  return request(`/hrd/recruitment/candidates${query}`);
+}
+
+export async function apiHrdCreateCandidate(payload: { job_opening_id: string; name: string; stage?: 'SCREENING' | 'INTERVIEW' | 'HIRED' | 'REJECTED' }): Promise<{ message: string; candidateId: string }> {
+  return request("/hrd/recruitment/candidates", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function apiHrdUpdateCandidateStage(id: string, stage: 'SCREENING' | 'INTERVIEW' | 'HIRED' | 'REJECTED'): Promise<{ message: string }> {
+  return request(`/hrd/recruitment/candidates/${id}/stage`, { method: "PATCH", body: JSON.stringify({ stage }) });
+}
+
+export async function apiHrdUpdateCandidate(id: string, payload: any): Promise<{ message: string }> {
+  return request(`/hrd/recruitment/candidates/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+}
+
+export async function apiHrdDeleteCandidate(id: string): Promise<{ message: string }> {
+  return request(`/hrd/recruitment/candidates/${id}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Kehadiran Manual HRD & Pengaturan Hari Kerja
+// ---------------------------------------------------------------------------
+export async function apiHrdCreateManualAttendance(payload: {
+  user_id: string;
+  date: string;
+  check_in_time?: string | null;
+  check_out_time?: string | null;
+  status?: string;
+  hospital_id?: string;
+  custom_location_name?: string;
+  photo_url?: string | null;
+}): Promise<{ message: string; id: string }> {
+  return request("/hrd/attendance/manual", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function apiHrdGetWorkDaysSettings(): Promise<{ workDays: string }> {
+  return request("/hrd/settings/work-days");
+}
+
+export async function apiHrdSaveWorkDaysSettings(workDays: string): Promise<{ message: string; workDays: string }> {
+  return request("/hrd/settings/work-days", {
+    method: "POST",
+    body: JSON.stringify({ workDays })
+  });
+}
+
+
+
+

@@ -1,0 +1,37 @@
+{
+  "name": "smartwork-backend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "tsx watch src/index.js",
+    "db:setup": "mysql -u root -p < schema.sql",
+    "test": "vitest run",
+    "test:properties": "vitest run tests/properties",
+    "lint": "eslint .",
+    "format": "prettier --write \"src/**/*.{js,ts}\""
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "date-fns": "^4.4.0",
+    "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.4.0",
+    "mysql2": "^3.11.5",
+    "nodemailer": "^10.0.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "eslint": "^9.0.0",
+    "fast-check": "^4.2.0",
+    "prettier": "^3.0.0",
+    "tsx": "^4.21.0",
+    "vitest": "^4.1.9"
+  }
+}
